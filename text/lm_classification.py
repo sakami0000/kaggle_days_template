@@ -25,7 +25,7 @@ from transformers import (
 )
 from transformers.file_utils import PaddingStrategy
 
-from src.data import BucketLoader
+from src.data import BucketSampler
 from src.utils import set_seed, freeze, timer, upload_to_gcs
 
 
@@ -38,6 +38,7 @@ class config:
 
     model_name = "bert-base-uncased"
     use_fast = True
+    fp16 = True
 
     n_splits = 4
     n_epochs = 2
@@ -191,12 +192,13 @@ class BertClassifier(BertPreTrainedModel):
 
     def predict(self, data_loader: DataLoader) -> np.ndarray:
         self.eval()
+        dtype = torch.half if config.fp16 else torch.float
         preds = torch.zeros(
-            (data_loader.data_size,), dtype=torch.half, device=self.device
+            (len(data_loader.dataset),), dtype=dtype, device=self.device
         )
         with torch.no_grad():
             for idx, batch in tqdm(data_loader, desc="predict", leave=False):
-                with autocast():
+                with autocast(enabled=config.fp16):
                     preds[idx] = self(**batch).detach()
         return preds.float().sigmoid().cpu().numpy().ravel()
 
@@ -245,13 +247,18 @@ def main(debug: bool = False):
             test_sort_keys.append(len(encoding.input_ids))
 
         test_dataset = TextDataset(test_encodings)
-        test_loader = BucketLoader(
+        test_sampler = BucketSampler(
+            test_dataset,
+            test_sort_keys,
+            bucket_size=None,
+            batch_size=config.eval_batch_size,
+            shuffle_data=False,
+        )
+        test_loader = DataLoader(
             test_dataset,
             batch_size=config.eval_batch_size,
-            bucket_size=config.bucket_size,
-            shuffle=False,
+            sampler=test_sampler,
             num_workers=0,
-            pin_memory=True,
             collate_fn=collator,
         )
 
@@ -272,35 +279,6 @@ def main(debug: bool = False):
 
     # train
     with timer("train"):
-        model = BertClassifier.from_pretrained(config.model_name)
-        model.zero_grad()
-        model.to(config.device)
-
-        param_optimizer = list(model.named_parameters())
-        no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
-        optimizer_grouped_parameters = [
-            {
-                "params": [
-                    p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.01,
-            },
-            {
-                "params": [
-                    p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
-        optimizer = AdamW(optimizer_grouped_parameters, lr=config.lr)
-
-        num_training_steps = len(train_encodings) * config.n_epochs // config.batch_size
-        num_warmup_steps = int(config.warmup * num_training_steps)
-        scheduler = get_scheduler(
-            config.scheduler, optimizer, num_warmup_steps, num_training_steps
-        )
-        scaler = GradScaler()
-
         valid_preds = np.zeros((len(train_df),), dtype=np.float64)
         test_preds = np.zeros((len(test_df),), dtype=np.float64)
         cv_scores = []
@@ -308,27 +286,69 @@ def main(debug: bool = False):
         for fold, (train_idx, valid_idx) in enumerate(generate_split(train_encodings)):
             logger.info(f"fold {fold + 1}")
 
+            # model
+            model = BertClassifier.from_pretrained(config.model_name)
+            model.zero_grad()
+            model.to(config.device)
+
+            param_optimizer = list(model.named_parameters())
+            no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
+            optimizer_grouped_parameters = [
+                {
+                    "params": [
+                        p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+                    ],
+                    "weight_decay": 0.01,
+                },
+                {
+                    "params": [
+                        p for n, p in param_optimizer if any(nd in n for nd in no_decay)
+                    ],
+                    "weight_decay": 0.0,
+                },
+            ]
+            optimizer = AdamW(optimizer_grouped_parameters, lr=config.lr)
+
+            num_training_steps = len(train_encodings) * config.n_epochs // config.batch_size
+            num_warmup_steps = int(config.warmup * num_training_steps)
+            scheduler = get_scheduler(
+                config.scheduler, optimizer, num_warmup_steps, num_training_steps
+            )
+            scaler = GradScaler()
+
+            # data
             train_dataset = TextDataset(
                 train_encodings, train_df[config.target_column], indices=train_idx
             )
             valid_dataset = TextDataset(train_encodings, indices=valid_idx)
 
-            train_loader = BucketLoader(
+            train_sampler = BucketSampler(
+                train_dataset,
+                train_sort_keys[train_idx],
+                bucket_size=config.bucket_size,
+                batch_size=config.batch_size,
+                shuffle_data=True,
+            )
+            valid_sampler = BucketSampler(
+                valid_dataset,
+                train_sort_keys[valid_idx],
+                bucket_size=None,
+                batch_size=config.eval_batch_size,
+                shuffle_data=False,
+            )
+
+            train_loader = DataLoader(
                 train_dataset,
                 batch_size=config.batch_size,
-                bucket_size=config.bucket_size,
-                shuffle=True,
+                sampler=train_sampler,
                 num_workers=0,
-                pin_memory=True,
                 collate_fn=collator,
             )
-            valid_loader = BucketLoader(
+            valid_loader = DataLoader(
                 valid_dataset,
                 batch_size=config.eval_batch_size,
-                bucket_size=config.bucket_size,
-                shuffle=False,
+                sampler=valid_sampler,
                 num_workers=0,
-                pin_memory=True,
                 collate_fn=collator,
             )
 
@@ -341,7 +361,7 @@ def main(debug: bool = False):
 
                 progress = tqdm(train_loader, desc=f"epoch {epoch + 1}", leave=False)
                 for x_batch, y_batch in progress:
-                    with autocast():
+                    with autocast(enabled=config.fp16):
                         y_preds = model(**x_batch)
                         loss = nn.BCEWithLogitsLoss()(y_preds, y_batch)
 
@@ -362,7 +382,7 @@ def main(debug: bool = False):
                 valid_score = roc_auc_score(valid_y, valid_fold_preds)
                 epoch_elapsed_time = (time.time() - epoch_start_time) / 60
                 logger.info(
-                    f"Epoch {epoch + 1}"
+                    f"  Epoch {epoch + 1}"
                     f" \t train loss: {loss_ema:.5f}"
                     f" \t valid score: {valid_score:.5f}"
                     f" \t time: {epoch_elapsed_time:.2f} min"
