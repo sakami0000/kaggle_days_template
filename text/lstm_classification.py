@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple, Union
 
+import gensim.downloader
 import numpy as np
 import pandas as pd
 import torch
@@ -37,6 +38,7 @@ class config:
     max_vocab_size = 100000
     vector_size = 300
 
+    word2vec_pretrained = "fasttext-wiki-news-subwords-300"
     word2vec_kwargs = {
         "epochs": 5,
         "min_count": 1,
@@ -56,7 +58,7 @@ class config:
     }
     ema_kwargs = {
         "decay": 0.9,
-        "n": 1,
+        "n": 10,
     }
 
     batch_size = 512
@@ -104,12 +106,12 @@ class Tokenizer:
         self.max_vocab_size = max_vocab_size
 
     @classmethod
-    def build_from_text(
-        cls, texts: List[str], max_len: int, max_vocab_size: int = 100000
+    def build_from_tokens(
+        cls, tokens: List[List[str]], max_len: int, max_vocab_size: int = 100000
     ) -> "Tokenizer":
         counter = Counter()
-        for text in texts:
-            counter.update(text.split())
+        for token in tokens:
+            counter.update(token)
 
         vocab = {"<PAD>": 0, "<UNK>": max_vocab_size + 1}
         vocab.update(
@@ -329,43 +331,52 @@ def main(debug: bool = False):
     logger.info(f"train shape : {train_df.shape}")
     logger.info(f"test shape  : {test_df.shape}")
 
-    # train word2vec
-    with timer("train word2vec"):
-        texts = list(
-            itertools.chain(train_df[config.text_column], test_df[config.text_column])
-        )
-        fill_blank = lambda text: text if len(text.strip()) > 0 else "<BLANK>"
-        tokens = [fill_blank(preprocess_text(text)).split() for text in texts]
-        word_freq = Counter(itertools.chain.from_iterable(tokens))
+    # tokenize
+    texts = list(
+        itertools.chain(train_df[config.text_column], test_df[config.text_column])
+    )
+    fill_blank = lambda text: text if len(text.strip()) > 0 else "<BLANK>"
+    tokens = [fill_blank(preprocess_text(text)).split() for text in texts]
 
-        if not debug:
-            # log training progress
-            logging.basicConfig(
-                format="%(levelname)s - %(asctime)s: %(message)s",
-                datefmt="%H:%M:%S",
-                level=logging.INFO,
+    if config.word2vec_pretrained is not None and not debug:
+        # It takes long time to run the download
+        wv = gensim.downloader.load(config.word2vec_pretrained)
+        tokenizer = Tokenizer.build_from_tokens(
+            tokens, max_len=config.max_len, max_vocab_size=config.max_vocab_size
+        )
+
+    else:
+        # train word2vec
+        with timer("train word2vec"):
+            if not debug:
+                # log training progress
+                logging.basicConfig(
+                    format="%(levelname)s - %(asctime)s: %(message)s",
+                    datefmt="%H:%M:%S",
+                    level=logging.INFO,
+                )
+
+            word_freq = Counter(itertools.chain.from_iterable(tokens))
+            w2v_model = Word2Vec(
+                **config.word2vec_kwargs,
+                vector_size=config.vector_size,
+                max_vocab_size=config.max_vocab_size,
             )
+            w2v_model.build_vocab_from_freq(word_freq)
+            w2v_model.train(tokens, total_examples=len(tokens), epochs=w2v_model.epochs)
+            wv = w2v_model.wv
 
-        w2v_model = Word2Vec(
-            **config.word2vec_kwargs,
-            vector_size=config.vector_size,
-            max_vocab_size=config.max_vocab_size,
-        )
-        w2v_model.build_vocab_from_freq(word_freq)
-        w2v_model.train(tokens, total_examples=len(tokens), epochs=w2v_model.epochs)
-        wv = w2v_model.wv
-
-        vocab = {
-            **{"<PAD>": 0, "<UNK>": config.max_vocab_size + 1},
-            **{key: idx + 1 for key, idx in wv.key_to_index.items()},
-        }
+            vocab = {
+                **{"<PAD>": 0, "<UNK>": config.max_vocab_size + 1},
+                **{key: idx + 1 for key, idx in wv.key_to_index.items()},
+            }
+            tokenizer = Tokenizer(
+                vocab, max_len=config.max_len, max_vocab_size=config.max_vocab_size
+            )
 
     # prepare data
     with timer("prepare data"):
         # encode text
-        tokenizer = Tokenizer(
-            vocab, max_len=config.max_len, max_vocab_size=config.max_vocab_size
-        )
         encodings = []
         sort_keys = []
         for text in tqdm(tokens, desc="encode text"):
@@ -412,7 +423,9 @@ def main(debug: bool = False):
 
     # load embeddings
     with timer("load embeddings"):
-        embedding_matrix = load_embeddings(vocab, wv, vector_size=config.vector_size)
+        embedding_matrix = load_embeddings(
+            tokenizer.vocab, wv, vector_size=config.vector_size
+        )
 
     # train
     with timer("train"):
