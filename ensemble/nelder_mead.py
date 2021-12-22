@@ -7,7 +7,7 @@ from loguru import logger
 from scipy.optimize import minimize
 from sklearn.metrics import roc_auc_score
 
-from src.utils import set_seed, timer, freeze, download_from_gcs, upload_to_gcs
+from src.utils import download_from_gcs, freeze, set_seed, timer, upload_to_gcs
 
 
 @freeze

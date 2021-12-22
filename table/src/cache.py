@@ -30,6 +30,10 @@ def pickle_cache(overwrite: bool = False):
 
             if file_name in cached_features:
                 result = cached_features[file_name]
+                if isinstance(result, (tuple, list)):
+                    result = [_result.copy() for _result in result]
+                else:
+                    result = result.copy()
 
             else:
                 cache_dir = Path("./input/cache/")
@@ -40,6 +44,9 @@ def pickle_cache(overwrite: bool = False):
                     result = [pd.read_pickle(save_file) for save_file in save_files]
                     logger.info(f"{file_name} loaded.")
 
+                    if len(result) == 1:
+                        result = result[0]
+
                 else:
                     result = function(*args, **kwargs)
 
@@ -47,7 +54,7 @@ def pickle_cache(overwrite: bool = False):
                         for i, _result in enumerate(result):
                             _result.to_pickle(cache_dir / f"{file_name}{i}.pkl")
                     else:
-                        result.to_pickle(cache_dir / f"{file_name}.pkl")
+                        result.to_pickle(cache_dir / f"{file_name}0.pkl")
 
                 cached_features[file_name] = result
 

@@ -5,11 +5,11 @@ import shutil
 import subprocess
 import time
 from contextlib import ContextDecorator
-from google.cloud import storage
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from google.cloud import storage
 from loguru import logger
 
 

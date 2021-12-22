@@ -11,22 +11,22 @@ from loguru import logger
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 from torch import nn
-from torch.cuda.amp import autocast, GradScaler
-from torch.utils.data import Dataset, DataLoader
+from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 from transformers import (
     AdamW,
     AutoTokenizer,
     BatchEncoding,
-    BertPreTrainedModel,
     BertModel,
-    get_scheduler,
+    BertPreTrainedModel,
     PreTrainedTokenizerBase,
+    get_scheduler,
 )
 from transformers.file_utils import PaddingStrategy
 
 from src.data import BucketSampler
-from src.utils import set_seed, freeze, timer, upload_to_gcs
+from src.utils import freeze, set_seed, timer, upload_to_gcs
 
 
 @freeze
@@ -284,6 +284,7 @@ def main(debug: bool = False):
         cv_scores = []
 
         for fold, (train_idx, valid_idx) in enumerate(generate_split(train_encodings)):
+            logger.info("-" * 40)
             logger.info(f"fold {fold + 1}")
 
             # model
@@ -296,7 +297,9 @@ def main(debug: bool = False):
             optimizer_grouped_parameters = [
                 {
                     "params": [
-                        p for n, p in param_optimizer if not any(nd in n for nd in no_decay)
+                        p
+                        for n, p in param_optimizer
+                        if not any(nd in n for nd in no_decay)
                     ],
                     "weight_decay": 0.01,
                 },
@@ -309,7 +312,7 @@ def main(debug: bool = False):
             ]
             optimizer = AdamW(optimizer_grouped_parameters, lr=config.lr)
 
-            num_training_steps = len(train_encodings) * config.n_epochs // config.batch_size
+            num_training_steps = len(train_idx) * config.n_epochs // config.batch_size
             num_warmup_steps = int(config.warmup * num_training_steps)
             scheduler = get_scheduler(
                 config.scheduler, optimizer, num_warmup_steps, num_training_steps

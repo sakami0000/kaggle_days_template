@@ -5,12 +5,12 @@ import shutil
 import subprocess
 import time
 from contextlib import ContextDecorator
-from google.cloud import storage
 from pathlib import Path
 from typing import Any
 
-import lightgbm as lgb
 import numpy as np
+import torch
+from google.cloud import storage
 from lightgbm.callback import _format_eval_result
 from loguru import logger
 
@@ -19,6 +19,9 @@ def set_seed(seed: int = 0):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
 
 
 class timer(ContextDecorator):

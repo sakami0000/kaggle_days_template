@@ -1,6 +1,6 @@
 import time
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Generator, List, Optional, Tuple, Union
 
 import lightgbm as lgb
 import numpy as np
@@ -9,7 +9,7 @@ from loguru import logger
 from sklearn.model_selection import KFold
 
 from src.load import load_features
-from src.utils import set_seed, timer, freeze, upload_to_gcs, log_evaluation
+from src.utils import freeze, log_evaluation, set_seed, timer, upload_to_gcs
 
 
 @freeze
@@ -17,9 +17,9 @@ class config:
     features = [
         "general_features",
     ]
-    id_column = "user_id"
-    target_column = "age"
-    prediction_column = "age"
+    id_column = "id"
+    target_column = "result"
+    prediction_column = "result"
 
     n_splits = 4
     n_models = 1
@@ -41,13 +41,32 @@ class config:
     }
     lgb_kwargs = {
         "num_boost_round": 100000,
-        "early_stopping_rounds": 200,
     }
+    early_stopping_rounds = 200
 
     bucket_name = "kaggledays_championship"
     bucket_path = "sakami/lightgbm/"  # CHECK HERE!!!
 
     seed = 1029
+
+
+def generate_split(
+    X: Optional[np.ndarray] = None,
+    y: Optional[np.ndarray] = None,
+    groups: Optional[np.ndarray] = None,
+) -> Generator[np.ndarray, None, None]:
+    train_fold = pd.read_csv("./input/train_fold.csv")
+
+    if train_fold["fold"].nunique() != config.n_splits:
+        raise ValueError("The number of splits in CSV and config must be the same.")
+
+    if len(train_fold) != len(X):
+        train_fold = train_fold.sample(len(X), random_state=config.seed)
+
+    for i in range(config.n_splits):
+        train_idx = np.where(train_fold["fold"] != i)[0]
+        valid_idx = np.where(train_fold["fold"] == i)[0]
+        yield train_idx, valid_idx
 
 
 def main(debug: bool = False):
@@ -69,12 +88,11 @@ def main(debug: bool = False):
 
     # train
     with timer("train"):
-        kf = KFold(n_splits=config.n_splits, shuffle=True, random_state=config.seed)
         valid_preds = np.zeros((len(train_df),), dtype=np.float64)
         test_preds = np.zeros((len(test_df),), dtype=np.float64)
         cv_scores = []
 
-        for fold, (train_idx, valid_idx) in enumerate(kf.split(train_df)):
+        for fold, (train_idx, valid_idx) in enumerate(generate_split(train_df)):
             logger.info("-" * 40)
             logger.info(f"fold {fold +  1}")
 
@@ -97,7 +115,10 @@ def main(debug: bool = False):
                 dvalid = lgb.Dataset(valid_x, valid_y)
 
                 period = lgb_kwargs.get("verbose_eval", 50)
-                callbacks = [log_evaluation(period=period)]
+                callbacks = [
+                    lgb.early_stopping(config.early_stopping_rounds),
+                    log_evaluation(period=period),
+                ]
 
                 model = lgb.train(
                     params=lgb_params,
@@ -134,6 +155,7 @@ def main(debug: bool = False):
         }
     ).to_csv(save_dir / "test.csv", index=False)
 
+    # upload to GCS
     if not debug:
         upload_to_gcs(
             save_dir, bucket_name=config.bucket_name, gcs_prefix=config.bucket_path

@@ -10,21 +10,21 @@ import gensim.downloader
 import numpy as np
 import pandas as pd
 import torch
-from gensim.models import Word2Vec, KeyedVectors
+from gensim.models import KeyedVectors, Word2Vec
 from loguru import logger
 from nltk.stem import PorterStemmer, SnowballStemmer
 from nltk.stem.lancaster import LancasterStemmer
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import KFold
 from torch import nn, optim
-from torch.utils.data import Dataset, DataLoader
-from transformers import get_scheduler
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from transformers import get_scheduler
 
 from src.data import BucketSampler
 from src.ema import ModelEma
 from src.preprocess import preprocess_text
-from src.utils import set_seed, freeze, timer, upload_to_gcs
+from src.utils import freeze, set_seed, timer, upload_to_gcs
 
 
 @freeze
@@ -339,7 +339,7 @@ def main(debug: bool = False):
     tokens = [fill_blank(preprocess_text(text)).split() for text in texts]
 
     if config.word2vec_pretrained is not None and not debug:
-        # It takes long time to run the download
+        # It takes a long time to download
         wv = gensim.downloader.load(config.word2vec_pretrained)
         tokenizer = Tokenizer.build_from_tokens(
             tokens, max_len=config.max_len, max_vocab_size=config.max_vocab_size
@@ -434,6 +434,7 @@ def main(debug: bool = False):
         cv_scores = []
 
         for fold, (train_idx, valid_idx) in enumerate(generate_split(train_encodings)):
+            logger.info("-" * 40)
             logger.info(f"fold {fold + 1}")
 
             # model
@@ -444,9 +445,7 @@ def main(debug: bool = False):
             ema = ModelEma(model, **config.ema_kwargs)
             optimizer = optim.Adam(model.parameters(), lr=config.lr)
 
-            num_training_steps = (
-                len(train_encodings) * config.n_epochs // config.batch_size
-            )
+            num_training_steps = len(train_idx) * config.n_epochs // config.batch_size
             num_warmup_steps = int(config.warmup * num_training_steps)
             scheduler = get_scheduler(
                 config.scheduler, optimizer, num_warmup_steps, num_training_steps

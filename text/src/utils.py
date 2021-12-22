@@ -7,11 +7,11 @@ import subprocess
 import time
 from contextlib import ContextDecorator
 from pathlib import Path
-from google.cloud import storage
 from typing import Any, Callable
 
 import numpy as np
 import torch
+from google.cloud import storage
 from loguru import logger
 
 
