@@ -15,7 +15,6 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from src.load import load_features
-from src.preprocess import rank_gauss
 from src.utils import freeze, set_seed, timer, upload_to_gcs
 
 
@@ -262,9 +261,6 @@ def main(debug: bool = False):
         train_df = concat_df.iloc[: len(train_df)].reset_index(drop=True)
         test_df = concat_df.iloc[-len(test_df) :].reset_index(drop=True)
 
-    # scale target
-    train_df[config.target_column] = np.log1p(train_df[config.target_column])
-
     train_x = train_df.drop(other_columns, axis=1)
     test_x = test_df.drop(other_columns, axis=1)
 
@@ -391,10 +387,6 @@ def main(debug: bool = False):
 
             if debug:
                 break
-
-    # post-process
-    valid_preds = np.expm1(valid_preds).clip(0.0, 1.0)
-    test_preds = np.expm1(test_preds).clip(0.0, 1.0)
 
     # save
     pd.DataFrame(
