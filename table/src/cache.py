@@ -30,6 +30,7 @@ def pickle_cache(overwrite: bool = False):
 
             if file_name in cached_features:
                 result = cached_features[file_name]
+
                 if isinstance(result, (tuple, list)):
                     result = [_result.copy() for _result in result]
                 else:

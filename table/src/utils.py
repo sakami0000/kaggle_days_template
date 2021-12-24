@@ -6,12 +6,12 @@ import subprocess
 import time
 from contextlib import ContextDecorator
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
 from google.cloud import storage
-from lightgbm.callback import _format_eval_result
+from lightgbm.callback import CallbackEnv, _format_eval_result
 from loguru import logger
 
 
@@ -180,8 +180,35 @@ def upload_to_gcs(path: str, bucket_name: str, gcs_prefix: str = ""):
         _upload_to_gcs(bucket, Path(path), dir_name=gcs_prefix)
 
 
-def log_evaluation(period=1, show_stdv=True, level=logging.DEBUG):
-    def _callback(env):
+def log_evaluation(
+    period: int = 1, show_stdv: bool = True, level: int = logging.DEBUG
+) -> Callable:
+    """Create a callback that logs the evaluation results via logger.
+
+    By default, standard output resource is used.
+    Use ``register_logger()`` function to register a custom logger.
+
+    Note
+    ----
+    Requires at least one validation data.
+
+    Parameters
+    ----------
+    period : int, optional (default=1)
+        The period to log the evaluation results.
+        The last boosting stage or the boosting stage found by using ``early_stopping`` callback is also logged.
+    show_stdv : bool, optional (default=True)
+        Whether to log stdv (if provided).
+    level : int, optional (default=logging.DEBUG)
+        Output level.
+
+    Returns
+    -------
+    callback : callable
+        The callback that logs the evaluation results every ``period`` boosting iteration(s).
+    """
+
+    def _callback(env: CallbackEnv) -> None:
         if (
             period > 0
             and env.evaluation_result_list
@@ -190,7 +217,7 @@ def log_evaluation(period=1, show_stdv=True, level=logging.DEBUG):
             result = "\t".join(
                 [_format_eval_result(x, show_stdv) for x in env.evaluation_result_list]
             )
-            logger.log(level, "[{}]\t{}".format(env.iteration + 1, result))
+            logger.log(level, f"[{env.iteration + 1}]\t{result}")
 
-    _callback.order = 10
+    _callback.order = 10  # type: ignore
     return _callback

@@ -2,9 +2,9 @@ import time
 from pathlib import Path
 from typing import Dict, Generator, List, Optional, Tuple, Union
 
-import lightgbm as lgb
 import numpy as np
 import pandas as pd
+from catboost import CatBoost, Pool
 from loguru import logger
 from sklearn.model_selection import KFold
 
@@ -24,28 +24,15 @@ class config:
     n_splits = 4
     n_models = 1
 
-    lgb_params = {
-        "objective": "rmse",
-        "metric": ["rmse"],
-        "learning_rate": 0.1,
-        "max_depth": 8,
-        "num_leaves": 16,
-        "reg_lambda": 0.01,
-        "reg_alpha": 0.01,
-        "max_cat_threshold": 8,
-        "cat_smooth": 10,
-        "colsample_bytree": 0.5,
-        "subsample": 0.9,
-        "bagging_freq": 1,
-        "seed": 72,
+    cat_params = {
+        "loss_function": "RMSE",
+        "eval_metric": "RMSE",
+        "early_stopping_rounds": 200,
+        "random_seed": 1029,
     }
-    lgb_kwargs = {
-        "num_boost_round": 100000,
-    }
-    early_stopping_rounds = 200
 
     bucket_name = "kaggledays_championship"
-    bucket_path = "sakami/lightgbm/"  # CHECK HERE!!!
+    bucket_path = "sakami/catboost/"  # CHECK HERE!!!
 
     seed = 1029
 
@@ -102,36 +89,37 @@ def main(debug: bool = False):
             train_y = train_df[config.target_column].iloc[train_idx].values
             valid_y = train_df[config.target_column].iloc[valid_idx].values
 
+            categorical_columns = train_x.select_dtypes(
+                include="category"
+            ).columns.values
+
             for i in range(config.n_models):
                 logger.info(f"model {i + 1}")
-                lgb_params = config.lgb_params.copy()
-                lgb_kwargs = config.lgb_kwargs.copy()
-                lgb_params["seed"] += i
+                cat_params = config.cat_params.copy()
+                cat_params["random_seed"] += i
 
                 if debug:
-                    lgb_kwargs["num_boost_round"] = 10
+                    cat_params["num_boost_round"] = 10
 
-                dtrain = lgb.Dataset(train_x, train_y)
-                dvalid = lgb.Dataset(valid_x, valid_y)
+                train_pool = Pool(
+                    train_x,
+                    train_y,
+                    cat_features=categorical_columns,
+                )
+                valid_pool = Pool(valid_x, valid_y, cat_features=categorical_columns)
 
-                period = lgb_kwargs.get("verbose_eval", 50)
-                callbacks = [
-                    lgb.early_stopping(config.early_stopping_rounds),
-                    log_evaluation(period=period),
-                ]
-
-                model = lgb.train(
-                    params=lgb_params,
-                    train_set=dtrain,
-                    valid_sets=[dtrain, dvalid],
-                    valid_names=["train", "valid"],
-                    callbacks=callbacks,
-                    **lgb_kwargs,
+                model = CatBoost(params=cat_params)
+                model.fit(
+                    train_pool,
+                    eval_set=valid_pool,
+                    verbose_eval=200,
                 )
 
-                valid_preds[valid_idx] = model.predict(valid_x) / config.n_models
+                valid_preds[valid_idx] += model.predict(valid_x) / config.n_models
                 test_preds += model.predict(test_x) / config.n_splits / config.n_models
-                cv_scores.append(model.best_score["valid"][lgb_params["metric"][0]])
+                cv_scores.append(
+                    model.best_score_["validation"][cat_params["eval_metric"]]
+                )
 
                 if debug:
                     break
@@ -163,20 +151,20 @@ def main(debug: bool = False):
 
     # best iteration
     logger.info("-" * 40)
-    logger.info(f"best iteration : {model.best_iteration}")
+    logger.info(f"best iteration : {model.best_iteration_}")
 
     # best score
     logger.info("-" * 40)
-    for data_name, score_dict in model.best_score.items():
+    for data_name, score_dict in model.best_score_.items():
         for score_name, score in score_dict.items():
             logger.info(f"{data_name}_{score_name} : {score:.5f}")
 
     # feature importance
     logger.info("-" * 40)
     logger.info("feature importance:")
-    feature_importance = model.feature_importance(importance_type="gain")
+    feature_importance = model.feature_importances_
     for i in np.argsort(feature_importance):
-        logger.info(f"\t{model.feature_name()[i]:35s} : {feature_importance[i]:.2f}")
+        logger.info(f"\t{model.feature_names_[i]:35s} : {feature_importance[i]:.2f}")
 
     cv_score = np.mean(cv_scores)
     logger.info(f"cv score: {cv_score:.5f}")

@@ -11,6 +11,7 @@ from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch import nn, optim
+from torch.nn.modules.activation import PReLU
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -56,7 +57,7 @@ def generate_split(
     X: Optional[np.ndarray] = None,
     y: Optional[np.ndarray] = None,
     groups: Optional[np.ndarray] = None,
-) -> Generator[np.ndarray, None, None]:
+) -> Generator[Tuple[np.ndarray, np.ndarray], None, None]:
     train_fold = pd.read_csv("./input/train_fold.csv")
 
     if train_fold["fold"].nunique() != config.n_splits:
@@ -191,7 +192,7 @@ class WaterModel(nn.Module):
         cat_x = self.category_linear(cat_x)
 
         x = torch.cat([num_x, cat_x], dim=-1)
-        output = self.head(x).view(-1)
+        output = self.head(x).squeeze(1)
         return output
 
     def predict(self, data_loader: DataLoader) -> np.ndarray:
