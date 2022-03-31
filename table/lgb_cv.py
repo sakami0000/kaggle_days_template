@@ -27,7 +27,7 @@ class config:
     lgb_params = {
         "objective": "rmse",
         "metric": ["rmse"],
-        "learning_rate": 0.1,
+        "learning_rate": 0.05,
         "max_depth": 8,
         "num_leaves": 16,
         "reg_lambda": 0.01,

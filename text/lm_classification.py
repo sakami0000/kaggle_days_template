@@ -190,15 +190,13 @@ class BertClassifier(BertPreTrainedModel):
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
-    def predict(self, data_loader: DataLoader) -> np.ndarray:
+    def predict(self, data_loader: DataLoader, fp16: bool = False) -> np.ndarray:
         self.eval()
-        dtype = torch.half if config.fp16 else torch.float
-        preds = torch.zeros(
-            (len(data_loader.dataset),), dtype=dtype, device=self.device
-        )
+        dtype = torch.half if fp16 else torch.float
+        preds = torch.zeros((len(data_loader.dataset),), dtype=dtype, device=self.device)
         with torch.no_grad():
             for idx, batch in tqdm(data_loader, desc="predict", leave=False):
-                with autocast(enabled=config.fp16):
+                with autocast(enabled=fp16):
                     preds[idx] = self(**batch).detach()
         return preds.float().sigmoid().cpu().numpy().ravel()
 
@@ -221,15 +219,11 @@ def main(debug: bool = False):
     # prepare data
     with timer("prepare data"):
         # encode text
-        tokenizer = AutoTokenizer.from_pretrained(
-            config.model_name, use_fast=config.use_fast
-        )
+        tokenizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=config.use_fast)
         train_encodings = []
         train_sort_keys = []
         for text in tqdm(train_df[config.text_column], desc="train encode text"):
-            encoding = tokenizer.encode_plus(
-                text, max_length=config.max_length, truncation="longest_first"
-            )
+            encoding = tokenizer.encode_plus(text, max_length=config.max_length, truncation="longest_first")
             train_encodings.append(encoding)
             train_sort_keys.append(len(encoding.input_ids))
 
@@ -240,9 +234,7 @@ def main(debug: bool = False):
         test_encodings = []
         test_sort_keys = []
         for text in tqdm(test_df[config.text_column], desc="test encode text"):
-            encoding = tokenizer.encode_plus(
-                text, max_length=config.max_length, truncation="longest_first"
-            )
+            encoding = tokenizer.encode_plus(text, max_length=config.max_length, truncation="longest_first")
             test_encodings.append(encoding)
             test_sort_keys.append(len(encoding.input_ids))
 
@@ -296,17 +288,11 @@ def main(debug: bool = False):
             no_decay = ["bias", "LayerNorm.bias", "LayerNorm.weight"]
             optimizer_grouped_parameters = [
                 {
-                    "params": [
-                        p
-                        for n, p in param_optimizer
-                        if not any(nd in n for nd in no_decay)
-                    ],
+                    "params": [p for n, p in param_optimizer if not any(nd in n for nd in no_decay)],
                     "weight_decay": 0.01,
                 },
                 {
-                    "params": [
-                        p for n, p in param_optimizer if any(nd in n for nd in no_decay)
-                    ],
+                    "params": [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
                     "weight_decay": 0.0,
                 },
             ]
@@ -314,15 +300,11 @@ def main(debug: bool = False):
 
             num_training_steps = len(train_idx) * config.n_epochs // config.batch_size
             num_warmup_steps = int(config.warmup * num_training_steps)
-            scheduler = get_scheduler(
-                config.scheduler, optimizer, num_warmup_steps, num_training_steps
-            )
+            scheduler = get_scheduler(config.scheduler, optimizer, num_warmup_steps, num_training_steps)
             scaler = GradScaler()
 
             # data
-            train_dataset = TextDataset(
-                train_encodings, train_df[config.target_column], indices=train_idx
-            )
+            train_dataset = TextDataset(train_encodings, train_df[config.target_column], indices=train_idx)
             valid_dataset = TextDataset(train_encodings, indices=valid_idx)
 
             train_sampler = BucketSampler(
@@ -374,14 +356,10 @@ def main(debug: bool = False):
                     optimizer.zero_grad()
                     scheduler.step()
 
-                    loss_ema = (
-                        loss_ema * 0.9 + loss.item() * 0.1
-                        if loss_ema is not None
-                        else loss.item()
-                    )
+                    loss_ema = loss_ema * 0.9 + loss.item() * 0.1 if loss_ema is not None else loss.item()
                     progress.set_postfix(loss=loss_ema)
 
-                valid_fold_preds = model.predict(valid_loader)
+                valid_fold_preds = model.predict(valid_loader, fp16=config.fp16)
                 valid_score = roc_auc_score(valid_y, valid_fold_preds)
                 epoch_elapsed_time = (time.time() - epoch_start_time) / 60
                 logger.info(
@@ -395,7 +373,7 @@ def main(debug: bool = False):
                     break
 
             valid_preds[valid_idx] = valid_fold_preds
-            test_preds += model.predict(test_loader) / config.n_splits
+            test_preds += model.predict(test_loader, fp16=config.fp16) / config.n_splits
             cv_scores.append(valid_score)
 
             if debug:
@@ -419,9 +397,7 @@ def main(debug: bool = False):
 
     # upload to GCS
     if not debug:
-        upload_to_gcs(
-            save_dir, bucket_name=config.bucket_name, gcs_prefix=config.bucket_path
-        )
+        upload_to_gcs(save_dir, bucket_name=config.bucket_name, gcs_prefix=config.bucket_path)
 
     cv_score = np.mean(cv_scores)
     logger.info(f"cv score: {cv_score:.5f}")

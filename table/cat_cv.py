@@ -9,7 +9,7 @@ from loguru import logger
 from sklearn.model_selection import KFold
 
 from src.load import load_features
-from src.utils import freeze, log_evaluation, set_seed, timer, upload_to_gcs
+from src.utils import freeze, set_seed, timer, upload_to_gcs
 
 
 @freeze
@@ -99,7 +99,7 @@ def main(debug: bool = False):
                 cat_params["random_seed"] += i
 
                 if debug:
-                    cat_params["num_boost_round"] = 10
+                    cat_params["iterations"] = 10
 
                 train_pool = Pool(
                     train_x,
