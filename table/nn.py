@@ -40,7 +40,7 @@ class config:
     n_splits = 4
     n_epochs = 30
 
-    lr = 5e-3
+    lr = 3e-3
     eta_min = 1e-4
 
     batch_size = 64
@@ -94,9 +94,7 @@ class WaterDataset(Dataset):
     def __len__(self) -> int:
         return len(self.indices)
 
-    def __getitem__(
-        self, index: int
-    ) -> Tuple[torch.FloatTensor, torch.LongTensor, torch.FloatTensor]:
+    def __getitem__(self, index: int) -> Tuple[torch.FloatTensor, torch.LongTensor, torch.FloatTensor]:
         index = self.indices[index]
         num_x = torch.FloatTensor(self.df[self.numerical_columns].values[index])
         cat_x = torch.LongTensor(self.df[self.categorical_columns].values[index])
@@ -145,15 +143,9 @@ class WaterModel(nn.Module):
         )
 
         self.category_embeddings = nn.ModuleList(
-            [
-                nn.Embedding(n_cat, min(600, round(1.6 * n_cat ** 0.56)))
-                for n_cat in category_cardinalities
-            ]
+            [nn.Embedding(n_cat, min(600, round(1.6 * n_cat ** 0.56))) for n_cat in category_cardinalities]
         )
-        category_dimensions = [
-            embedding_layer.embedding_dim
-            for embedding_layer in self.category_embeddings
-        ]
+        category_dimensions = [embedding_layer.embedding_dim for embedding_layer in self.category_embeddings]
         self.category_linear = nn.Sequential(
             nn.Dropout(0.1),
             nn.Linear(sum(category_dimensions), 128),
@@ -179,15 +171,10 @@ class WaterModel(nn.Module):
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
-    def forward(
-        self, num_x: torch.FloatTensor, cat_x: torch.LongTensor
-    ) -> torch.FloatTensor:
+    def forward(self, num_x: torch.FloatTensor, cat_x: torch.LongTensor) -> torch.FloatTensor:
         num_x = self.numerical_linear(num_x)
 
-        cat_x = [
-            embedding_layer(cat_x[:, i])
-            for i, embedding_layer in enumerate(self.category_embeddings)
-        ]
+        cat_x = [embedding_layer(cat_x[:, i]) for i, embedding_layer in enumerate(self.category_embeddings)]
         cat_x = torch.cat(cat_x, dim=-1)
         cat_x = self.category_linear(cat_x)
 
@@ -228,9 +215,7 @@ def main(debug: bool = False):
         concat_df = pd.concat([train_df, test_df], sort=False, ignore_index=True)
 
         categorical_columns = config.categorical_columns
-        numerical_columns = concat_df.drop(
-            categorical_columns + other_columns, axis=1
-        ).columns.tolist()
+        numerical_columns = concat_df.drop(categorical_columns + other_columns, axis=1).columns.tolist()
 
         # replace non-overlapping categories with NaN
         for col in categorical_columns:
@@ -238,9 +223,7 @@ def main(debug: bool = False):
             concat_df.loc[~concat_df[col].isin(overlapped_categories), col] = np.nan
 
         # fill NaN (categorical)
-        concat_df[categorical_columns] = (
-            concat_df[categorical_columns].astype(str).fillna("__category_NaN__")
-        )
+        concat_df[categorical_columns] = concat_df[categorical_columns].astype(str).fillna("__category_NaN__")
 
         # encode categorical columns
         for col in categorical_columns:
@@ -251,9 +234,7 @@ def main(debug: bool = False):
         category_cardinalities = concat_df[categorical_columns].nunique().values
 
         # standard scaling
-        concat_df[numerical_columns] = StandardScaler().fit_transform(
-            concat_df[numerical_columns]
-        )
+        concat_df[numerical_columns] = StandardScaler().fit_transform(concat_df[numerical_columns])
 
         # fill NaN (numerical)
         avg_values = concat_df[numerical_columns].mean()
@@ -350,19 +331,13 @@ def main(debug: bool = False):
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
-                    scheduler.step()
 
-                    loss_ema = (
-                        loss_ema * 0.9 + loss.item() * 0.1
-                        if loss_ema is not None
-                        else loss.item()
-                    )
+                    loss_ema = loss_ema * 0.9 + loss.item() * 0.1 if loss_ema is not None else loss.item()
                     progress.set_postfix(loss=loss_ema)
 
+                scheduler.step()
                 valid_fold_preds = model.predict(valid_loader)
-                valid_score = mean_squared_error(
-                    valid_y, valid_fold_preds, squared=False
-                )
+                valid_score = mean_squared_error(valid_y, valid_fold_preds, squared=False)
                 epoch_elapsed_time = (time.time() - epoch_start_time) / 60
                 logger.info(
                     f"  Epoch {epoch + 1}"
@@ -405,9 +380,7 @@ def main(debug: bool = False):
 
     # upload to GCS
     if not debug:
-        upload_to_gcs(
-            save_dir, bucket_name=config.bucket_name, gcs_prefix=config.bucket_path
-        )
+        upload_to_gcs(save_dir, bucket_name=config.bucket_name, gcs_prefix=config.bucket_path)
 
     cv_score = np.mean(cv_scores)
     logger.info(f"cv score: {cv_score:.5f}")
