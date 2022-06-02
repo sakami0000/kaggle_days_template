@@ -157,6 +157,7 @@ class SequenceModel(nn.Module):
             [nn.Embedding(n_cat, min(600, round(1.6 * n_cat ** 0.56))) for n_cat in category_cardinalities]
         )
         category_dimensions = [embedding_layer.embedding_dim for embedding_layer in self.category_embeddings]
+        self.register_buffer("category_indices", torch.arange(len(category_cardinalities)))
 
         hidden_size = 128
 
@@ -215,7 +216,10 @@ class SequenceModel(nn.Module):
     ) -> torch.FloatTensor:
         num_x = self.numerical_linear(num_x)
 
-        cat_x = [embedding_layer(cat_x[:, :, i]) for i, embedding_layer in enumerate(self.category_embeddings)]
+        cat_x = [
+            embedding_layer(cat_x[:, :, i])
+            for i, embedding_layer in zip(self.category_indices, self.category_embeddings)
+        ]
         cat_x = torch.cat(cat_x, dim=-1)
 
         x = torch.cat([num_x, cat_x], dim=-1)

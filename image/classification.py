@@ -40,7 +40,7 @@ class config:
     lr = 1e-4
     weight_decay = 1e-6
     max_grad_norm = 1000
-    T_max = 3
+    t_max = 3
     eta_min = 1e-6
 
     bucket_name = "kaggledays_championship"
@@ -144,7 +144,7 @@ def get_transforms(mode: str, image_size: int) -> A.Compose:
 
 
 class ImageModel(nn.Module):
-    def __init__(self, model_name: str, num_labels: int, pretrained=False):
+    def __init__(self, model_name: str, num_labels: int, pretrained: bool = False):
         super().__init__()
         self.model = timm.create_model(model_name, pretrained=pretrained)
         self.n_features = self.model.classifier.in_features
@@ -220,7 +220,7 @@ def main(debug: bool = False):
 
             optimizer = optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay, amsgrad=False)
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer, T_max=config.T_max, eta_min=config.eta_min, last_epoch=-1
+                optimizer, T_max=config.t_max, eta_min=config.eta_min, last_epoch=-1
             )
             scaler = GradScaler()
 

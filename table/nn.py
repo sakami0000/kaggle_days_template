@@ -11,7 +11,6 @@ from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from torch import nn, optim
-from torch.nn.modules.activation import PReLU
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
@@ -36,6 +35,8 @@ class config:
     id_column = "id"
     target_column = "result"
     prediction_column = "result"
+
+    is_higher_better = False
 
     n_splits = 4
     n_epochs = 30
@@ -86,6 +87,9 @@ class WaterDataset(Dataset):
         self.categorical_columns = categorical_columns
         self.target = target
 
+        self.numerical_values = self.df[self.numerical_columns].values.astype(np.float32)
+        self.categorical_values = self.df[self.categorical_columns].values.astype(np.int64)
+
         if indices is None:
             indices = np.arange(len(self.df))
 
@@ -94,10 +98,10 @@ class WaterDataset(Dataset):
     def __len__(self) -> int:
         return len(self.indices)
 
-    def __getitem__(self, index: int) -> Tuple[torch.FloatTensor, torch.LongTensor, torch.FloatTensor]:
-        index = self.indices[index]
-        num_x = torch.FloatTensor(self.df[self.numerical_columns].values[index])
-        cat_x = torch.LongTensor(self.df[self.categorical_columns].values[index])
+    def __getitem__(self, idx: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        index = self.indices[idx]
+        num_x = self.numerical_values[index]
+        cat_x = self.categorical_values[index]
 
         if self.target is not None:
             target = self.target[index]
@@ -145,6 +149,8 @@ class WaterModel(nn.Module):
         self.category_embeddings = nn.ModuleList(
             [nn.Embedding(n_cat, min(600, round(1.6 * n_cat ** 0.56))) for n_cat in category_cardinalities]
         )
+        self.register_buffer("category_indices", torch.arange(len(category_cardinalities)))
+
         category_dimensions = [embedding_layer.embedding_dim for embedding_layer in self.category_embeddings]
         self.category_linear = nn.Sequential(
             nn.Dropout(0.1),
@@ -174,7 +180,9 @@ class WaterModel(nn.Module):
     def forward(self, num_x: torch.FloatTensor, cat_x: torch.LongTensor) -> torch.FloatTensor:
         num_x = self.numerical_linear(num_x)
 
-        cat_x = [embedding_layer(cat_x[:, i]) for i, embedding_layer in enumerate(self.category_embeddings)]
+        cat_x = [
+            embedding_layer(cat_x[:, i]) for i, embedding_layer in zip(self.category_indices, self.category_embeddings)
+        ]
         cat_x = torch.cat(cat_x, dim=-1)
         cat_x = self.category_linear(cat_x)
 
@@ -317,7 +325,7 @@ def main(debug: bool = False):
 
             loss_ema = None
             best_epoch = None
-            best_score = np.inf
+            best_score = -np.inf if config.is_higher_better else np.inf
 
             for epoch in range(config.n_epochs):
                 epoch_start_time = time.time()
@@ -346,7 +354,8 @@ def main(debug: bool = False):
                     f" \t time: {epoch_elapsed_time:.2f} min"
                 )
 
-                if valid_score < best_score:
+                improved = valid_score > best_score if config.is_higher_better else valid_score < best_score
+                if improved:
                     best_epoch = epoch
                     best_score = valid_score
                     torch.save(model.state_dict(), model_path)
